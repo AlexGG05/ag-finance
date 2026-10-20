@@ -1,0 +1,38 @@
+import {test,expect} from '@playwright/test';
+import {spawn} from 'node:child_process';
+import {once} from 'node:events';
+import {mkdtemp,readFile,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+let dir,server;
+const password='mein sicheres Testpasswort';
+async function link(email,kind){const messages=(await readFile(dir+'/mail-outbox.jsonl','utf8')).trim().split('\n').map(JSON.parse);return messages.findLast(m=>m.to===email&&m.kind===kind).text.match(/http[^\s]+/)[0];}
+test.beforeAll(async()=>{dir=await mkdtemp(join(tmpdir(),'ag-finance-e2e-'));server=spawn(process.execPath,['server.js'],{env:{...process.env,PORT:'3201',APP_URL:'http://localhost:3201',DATA_DIR:dir,SMTP_HOST:'',NODE_ENV:'test'}});await once(server.stdout,'data');});
+test.afterAll(async()=>{server.kill();await once(server,'exit');await rm(dir,{recursive:true,force:true});});
+test('two people register, confirm, join a household and share finance changes',async({page,browser,request})=>{
+ const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.goto('/');await expect(page.getByRole('heading',{name:'Willkommen zurück.'})).toBeVisible();
+ await page.screenshot({path:'/tmp/ag-finance-login.png',fullPage:true});
+ await page.getByRole('button',{name:'Jetzt registrieren'}).click();
+ await page.getByLabel('E-Mail-Adresse',{exact:true}).fill('owner@example.com');await page.getByLabel('Passwort',{exact:true}).fill(password);await page.getByRole('button',{name:'Konto erstellen'}).click();
+ await expect(page.locator('#auth-message')).toContainText('Bestätigungsmail');
+ await page.goto(await link('owner@example.com','verify'));await page.getByRole('button',{name:'E-Mail bestätigen'}).click();
+ await expect(page.locator('#auth-message')).toContainText('E-Mail bestätigt');
+ await page.getByLabel('E-Mail-Adresse',{exact:true}).fill('owner@example.com');await page.getByLabel('Passwort',{exact:true}).fill(password);await page.getByRole('button',{name:'Anmelden'}).click();
+ await expect(page.getByRole('heading',{name:'Alles im Blick.'})).toBeVisible();
+ await page.getByRole('button',{name:'Buchung hinzufügen'}).click();await page.getByLabel('Bezeichnung').fill('Gemeinsamer Supermarkt');await page.getByLabel('Betrag in €',{exact:true}).fill('56.78');await page.getByRole('button',{name:'Buchung speichern'}).click();
+ await expect(page.locator('#sync-status')).toContainText('gespeichert');await expect(page.getByText('Gemeinsamer Supermarkt')).toBeVisible();
+ await page.getByRole('link',{name:'Budgets',exact:false}).click();await page.getByLabel('Monatsbudget (€)').first().fill('400');await page.getByLabel('Monatsbudget (€)').first().press('Tab');await expect(page.locator('#sync-status')).toContainText('gespeichert');
+ await page.getByRole('link',{name:'Sparziele',exact:false}).click();await page.locator('#goal-form [name=title]').fill('Familienurlaub');await page.getByLabel('Zielbetrag in €').fill('1500');await page.getByRole('button',{name:'Sparziel anlegen'}).click();await expect(page.locator('#sync-status')).toContainText('gespeichert');
+ await page.getByLabel('Sparbetrag').fill('100');await page.getByRole('button',{name:'Zurückgelegt'}).click();await expect(page.locator('#sync-status')).toContainText('gespeichert');
+ await page.getByRole('button',{name:'Haushalt verwalten'}).click();await page.getByLabel('Jemanden einladen').fill('partner@example.com');await page.getByRole('button',{name:'Einladung senden'}).click();await expect(page.getByText('Einladung verschickt.',{exact:false})).toBeVisible();await page.locator('#close-household').click();
+ await request.post('/api/register',{data:{email:'partner@example.com',password}});const verify=new URL(await link('partner@example.com','verify'));await request.post('/api/verify',{data:{token:verify.searchParams.get('token')}});
+ const ctx=await browser.newContext();const partner=await ctx.newPage();await partner.goto(await link('partner@example.com','invite'));await partner.getByLabel('E-Mail-Adresse',{exact:true}).fill('partner@example.com');await partner.getByLabel('Passwort',{exact:true}).fill(password);await partner.getByRole('button',{name:'Anmelden'}).click();
+ await expect(partner.getByText('Gemeinsamer Supermarkt')).toBeVisible();
+ await partner.getByRole('link',{name:'Sparziele',exact:false}).click();await expect(partner.getByRole('heading',{name:'Familienurlaub'})).toBeVisible();await expect(partner.locator('.goal-value')).toContainText('100,00');
+ await partner.getByLabel('Sparbetrag').fill('50');await partner.getByRole('button',{name:'Zurückgelegt'}).click();await expect(partner.locator('#sync-status')).toContainText('gespeichert');await expect(page.locator('.goal-value')).toContainText('150,00',{timeout:10000});
+ await page.goto('/#dashboard');await expect(page.getByText('Gemeinsamer Supermarkt')).toBeVisible();await page.screenshot({path:'/tmp/ag-finance-dashboard.png',fullPage:true});
+ await page.setViewportSize({width:390,height:844});await page.screenshot({path:'/tmp/ag-finance-mobile.png',fullPage:true});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();
+ await page.getByRole('button',{name:'Haushalt verwalten'}).click();await expect(page.locator('.member-row').filter({hasText:'partner@example.com'})).toBeVisible();page.once('dialog',d=>d.accept());await page.getByRole('button',{name:'Entfernen'}).click();await expect(page.getByText('Mitglied entfernt.')).toBeVisible();
+ await ctx.close();expect(errors).toEqual([]);
+});

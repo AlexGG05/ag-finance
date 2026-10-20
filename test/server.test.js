@@ -1,0 +1,57 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {spawn} from 'node:child_process';
+import {once} from 'node:events';
+import {mkdtemp,readFile,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+test('accounts, confirmation, household sharing, isolation, concurrency and reset',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'ag-finance-test-'));const base='http://localhost:3199';
+ const server=spawn(process.execPath,['server.js'],{cwd:new URL('..',import.meta.url),env:{...process.env,PORT:'3199',APP_URL:base,DATA_DIR:dir,SMTP_HOST:'',NODE_ENV:'test'}});
+ let cookieA='',cookieB='',cookieC='';
+ const request=async(path,method='GET',data,cookie='')=>{const r=await fetch(base+'/api'+path,{method,headers:{'Content-Type':'application/json',...(cookie?{Cookie:cookie}:{})},...(data?{body:JSON.stringify(data)}:{})});return {status:r.status,data:await r.json(),cookie:r.headers.get('set-cookie')?.split(';')[0]};};
+ const token=async(email,kind)=>{const rows=(await readFile(dir+'/mail-outbox.jsonl','utf8')).trim().split('\n').map(JSON.parse);return new URL(rows.findLast(r=>r.to===email&&r.kind===kind).text.match(/http[^\s]+/)[0]).searchParams.get('token');};
+ const password='a secure test password';
+ try{
+  await Promise.race([once(server.stdout,'data'),once(server,'exit').then(()=>{throw Error('Server exited');}),new Promise((_,reject)=>setTimeout(()=>reject(Error('Startup timeout')),5000).unref())]);
+  const home=await fetch(base);assert.equal(home.status,200);assert.match(await home.text(),/AG Finance/);
+  for(const path of ['app.js','auth.js','style.css'])assert.equal((await fetch(base+'/'+path)).status,200);
+  assert.equal((await fetch(base+'/package.json')).status,404);
+  assert.equal((await request('/me')).status,401);
+  assert.equal((await request('/register','POST',{email:'bad',password})).status,400);
+  assert.equal((await request('/register','POST',{email:'a@example.com',password:'short'})).status,400);
+  assert.equal((await request('/register','POST',{email:'a@example.com',password})).status,200);
+  assert.equal((await request('/login','POST',{email:'a@example.com',password})).status,403);
+  const verifyA=await token('a@example.com','verify');assert.equal((await request('/verify','POST',{token:verifyA})).status,200);
+  assert.equal((await request('/verify','POST',{token:verifyA})).status,400);
+  const loginA=await request('/login','POST',{email:'a@example.com',password});assert.equal(loginA.status,200);cookieA=loginA.cookie;assert.match(cookieA,/ag_session=/);
+  const meA=await request('/me','GET',null,cookieA);const hid=meA.data.households[0].id;
+  for(const email of ['b@example.com','c@example.com']){await request('/register','POST',{email,password});await request('/verify','POST',{token:await token(email,'verify')});const r=await request('/login','POST',{email,password});if(email[0]==='b')cookieB=r.cookie;else cookieC=r.cookie;}
+  assert.equal((await request(`/households/${hid}/state`,'GET',null,cookieB)).status,403);
+  assert.equal((await request(`/households/${hid}/invite`,'POST',{email:'b@example.com'},cookieA)).status,200);
+  const invite=await token('b@example.com','invite');
+  assert.equal((await request('/accept-invite','POST',{token:invite},cookieC)).status,403);
+  assert.equal((await request('/accept-invite','POST',{token:invite},cookieB)).status,200);
+  assert.equal((await request('/accept-invite','POST',{token:invite},cookieB)).status,400);
+  assert.equal((await request(`/households/${hid}/invite`,'POST',{email:'c@example.com'},cookieB)).status,403);
+  const state={demo:false,transactions:[{id:'t1',title:'Gemeinsamer Einkauf',amount:80,type:'expense',category:'Lebensmittel',date:'2026-10-20'}],budgets:{Lebensmittel:300},goals:[]};
+  assert.equal((await request(`/households/${hid}/state`,'PUT',{state,revision:0},cookieA)).status,200);
+  const shared=await request(`/households/${hid}/state`,'GET',null,cookieB);assert.equal(shared.data.state.transactions[0].amount,80);
+  assert.equal((await request(`/households/${hid}/state`,'PUT',{state,revision:0},cookieB)).status,409);
+  assert.equal((await request(`/households/${hid}/state`,'PUT',{state:{...state,transactions:[{...state.transactions[0],amount:-1}]},revision:1},cookieB)).status,400);
+  assert.equal((await request(`/households/${hid}/state`,'PUT',{state,revision:1},cookieB)).status,200);
+  const meB=await request('/me','GET',null,cookieB);
+  assert.equal((await request(`/households/${hid}/member`,'DELETE',{userId:meB.data.user.id},cookieA)).status,200);
+  assert.equal((await request(`/households/${hid}/state`,'GET',null,cookieB)).status,403);
+  assert.equal((await request('/forgot','POST',{email:'a@example.com'})).status,200);
+  const reset=await token('a@example.com','reset');const newPassword='another secure password';
+  assert.equal((await request('/reset','POST',{token:reset,password:newPassword})).status,200);
+  assert.equal((await request('/me','GET',null,cookieA)).status,401);
+  assert.equal((await request('/reset','POST',{token:reset,password:newPassword})).status,400);
+  assert.equal((await request('/login','POST',{email:'a@example.com',password})).status,401);
+  const renewed=await request('/login','POST',{email:'a@example.com',password:newPassword});assert.equal(renewed.status,200);
+  assert.equal((await request('/logout','POST',{},renewed.cookie)).status,200);
+  assert.equal((await request('/me','GET',null,renewed.cookie)).status,401);
+  const crossOrigin=await fetch(base+'/api/login',{method:'POST',headers:{Origin:'https://evil.example','Content-Type':'application/json'},body:JSON.stringify({email:'a@example.com',password:newPassword})});assert.equal(crossOrigin.status,403);
+ }finally{server.kill();await once(server,'exit');await rm(dir,{recursive:true,force:true});}
+});

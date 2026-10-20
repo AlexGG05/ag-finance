@@ -1,0 +1,22 @@
+{
+  "name": "ag-finance",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "test": "node --test test/server.test.js",
+    "check": "node --check app.js && node --check auth.js && node --check server.js",
+    "test:e2e": "playwright test"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "nodemailer": "^10.1.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1"
+  }
+}

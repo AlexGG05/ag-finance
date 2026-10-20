@@ -1,0 +1,35 @@
+services:
+  ag-finance:
+    image: ghcr.io/alexgg05/ag-finance:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      DATA_DIR: /data
+      APP_URL: "${APP_URL:?Öffentliche HTTPS-Adresse setzen}"
+      SMTP_HOST: "${SMTP_HOST:?SMTP-Server setzen}"
+      SMTP_PORT: "${SMTP_PORT:-587}"
+      SMTP_FROM: "${SMTP_FROM:?Verifizierte Absenderadresse setzen}"
+      SMTP_USER: "${SMTP_USER:-}"
+      SMTP_PASS: "${SMTP_PASS:-}"
+    volumes:
+      - finance-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  finance-data:

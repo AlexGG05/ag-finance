@@ -1,0 +1,9 @@
+**
+!Dockerfile
+!package.json
+!package-lock.json
+!server.js
+!index.html
+!app.js
+!auth.js
+!style.css
